@@ -1,0 +1,6 @@
+{
+  "name": "ZX Lite Messenger",
+  "description": "Ultra-lightweight, low-RAM, and low-data native Android messaging app with real-time sync by ZUCCHERO XANN.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
