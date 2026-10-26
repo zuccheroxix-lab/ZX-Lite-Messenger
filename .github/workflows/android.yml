@@ -1,4 +1,4 @@
-name: ZX Lite Messenger CI
+name: ZX Lite Messenger CI & Release
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,41 +60,73 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Make Gradle Wrapper Executable
-        run: chmod +x gradlew || true
+        run: chmod +x gradlew
+
+      - name: Restore Debug Keystore if Needed
+        run: |
+          if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
+            echo "Restoring debug.keystore from base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+          if [ -f "debug.keystore" ]; then
+            echo "debug.keystore is present and ready."
+          else
+            echo "Warning: debug.keystore not found, Gradle will generate default."
+          fi
 
       - name: Run Local JVM Unit Tests
-        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
 
-      - name: Assemble Debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Verify APK Exists and Validate File Size
-        id: verify-apk
+      - name: Assemble Android APK
+        id: assemble-apk
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
-            echo "ERROR: APK file was not found in app/build/outputs/apk/debug"
-            exit 1
+          # If custom release signing keystore is supplied in GitHub Secrets, decode and assemble release
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "Signing secrets detected. Building signed Release APK..."
+            echo "$KEYSTORE_BASE64" | base64 -d > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+            RAW_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          else
+            echo "No custom release keystore secret found. Building installable test Debug APK..."
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+            RAW_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
           fi
-          
-          FILE_SIZE=$(stat -c%s "$APK_PATH" 2>/dev/null || stat -f%z "$APK_PATH")
-          echo "Found APK at: $APK_PATH"
-          echo "APK Size: $FILE_SIZE bytes"
-          
-          # Verify APK is larger than 1MB (1048576 bytes)
-          if [ "$FILE_SIZE" -lt 1048576 ]; then
-            echo "ERROR: Generated APK size ($FILE_SIZE bytes) is suspiciously small!"
-            exit 1
-          fi
-          
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "apk_size=$FILE_SIZE" >> $GITHUB_OUTPUT
 
-      - name: Upload Debug APK Artifact
+          if [ -z "$RAW_APK" ] || [ ! -f "$RAW_APK" ]; then
+            echo "::error::Gradle did not produce an APK file!"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$RAW_APK" 2>/dev/null || stat -f%z "$RAW_APK")
+          echo "Built APK located at: $RAW_APK"
+          echo "Raw APK Size: $FILE_SIZE bytes"
+
+          # Verify APK exists and has non-zero size (must be >= 1MB for Android Compose app)
+          if [ "$FILE_SIZE" -lt 1048576 ]; then
+            echo "::error::Generated APK size ($FILE_SIZE bytes) is suspiciously small or empty!"
+            exit 1
+          fi
+
+          # Standardize output asset name to 'ZX-Lite-Messenger.apk'
+          mkdir -p build-artifacts
+          cp "$RAW_APK" "build-artifacts/ZX-Lite-Messenger.apk"
+
+          STANDARDIZED_SIZE=$(stat -c%s "build-artifacts/ZX-Lite-Messenger.apk" 2>/dev/null || stat -f%z "build-artifacts/ZX-Lite-Messenger.apk")
+          echo "Standardized APK ready at build-artifacts/ZX-Lite-Messenger.apk ($STANDARDIZED_SIZE bytes)"
+          echo "apk_path=build-artifacts/ZX-Lite-Messenger.apk" >> $GITHUB_OUTPUT
+          echo "apk_size=$STANDARDIZED_SIZE" >> $GITHUB_OUTPUT
+
+      - name: Upload APK as Workflow Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zx-lite-messenger-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: ZX-Lite-Messenger-APK
+          path: build-artifacts/ZX-Lite-Messenger.apk
+          if-no-files-found: error
           retention-days: 14
 
   release:
@@ -107,21 +140,42 @@ jobs:
       - name: Download Built APK Artifact
         uses: actions/download-artifact@v4
         with:
-          name: zx-lite-messenger-debug-apk
+          name: ZX-Lite-Messenger-APK
           path: ./release-apk
 
-      - name: Publish GitHub Release
+      - name: Verify Downloaded Release Asset
+        run: |
+          ASSET_FILE="./release-apk/ZX-Lite-Messenger.apk"
+          if [ ! -f "$ASSET_FILE" ]; then
+            echo "::error::Expected release asset $ASSET_FILE was not downloaded!"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$ASSET_FILE" 2>/dev/null || stat -f%z "$ASSET_FILE")
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "::error::Asset file size ($SIZE bytes) is invalid or empty!"
+            exit 1
+          fi
+          echo "Release asset ZX-Lite-Messenger.apk verified ($SIZE bytes)."
+
+      - name: Publish GitHub Release with APK Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ./release-apk/*.apk
+          files: ./release-apk/ZX-Lite-Messenger.apk
           name: ZX Lite Messenger ${{ github.ref_name }}
           draft: false
           prerelease: false
+          generate_release_notes: true
           body: |
             ## ZX Lite Messenger — Release ${{ github.ref_name }}
-            **Branding**: ZUCCHERO XANN
-            **Focus**: Low RAM, Low Data, Real-time Native Android Chat
+            **Developer:** ZUCCHERO XANN  
+            **Focus:** Ultra-low RAM, minimal data consumption, and reliable realtime messaging.
 
-            ### Release Assets
-            - Standalone APK attached below.
-            - Compatible with Android 7.0+ (API 24+).
+            ### APK Direct Download
+            Direct download link for this release:
+            - **File Name:** `ZX-Lite-Messenger.apk`
+            - **Direct Download URL:** https://github.com/${{ github.repository }}/releases/latest/download/ZX-Lite-Messenger.apk
+
+            ### Compatibility & Installation
+            - Android 7.0+ (API level 24+)
+            - Architecture: Universal (ARM64, ARMv7, x86_64)
+            - Can be sideloaded and installed directly on physical Android smartphones and emulators.

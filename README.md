@@ -132,15 +132,38 @@ When running in an Android Emulator, the host machine's `localhost` is mapped to
   1. On the **Sign In / Register** screen, tap the Server Settings icon in the top right.
   2. Or navigate to **Settings -> Backend Server URL** anytime after signing in.
 
-### 4. Building the Android APK via Gradle
+### 4. Building & Downloading the Android APK
 
+#### A. Automated Builds via GitHub Actions (Recommended)
+This repository includes a continuous integration and deployment workflow (`.github/workflows/android.yml`):
+- **On Push to `main` / `master`**: Automatically builds and tests the app, producing the `ZX-Lite-Messenger-APK` artifact.
+- **Manual Trigger (`workflow_dispatch`)**: Go to **Actions** -> **ZX Lite Messenger CI & Release** -> click **Run workflow**.
+- **On Version Tag (e.g. `v1.0.0`)**: Automatically creates a GitHub Release and attaches the standalone installable APK as `ZX-Lite-Messenger.apk`.
+
+#### B. Direct Download Link Pattern
+When a release tag is pushed to your repository:
+```
+https://github.com/<OWNER>/<REPO>/releases/latest/download/ZX-Lite-Messenger.apk
+```
+*(Replace `<OWNER>/<REPO>` with your actual GitHub username/organization and repository name).*
+
+#### C. Local Build via Gradle
 ```bash
-# Assemble debug APK
+# Using Gradle wrapper
+./gradlew :app:assembleDebug
+
+# Or using system Gradle
 gradle :app:assembleDebug
 ```
+The resulting debug APK is generated at:
+`app/build/outputs/apk/debug/app-debug.apk` (or `ZX-Lite-Messenger.apk`).
 
-The resulting APK will be generated at:
-`app/build/outputs/apk/debug/app-debug.apk`
+#### D. Keystore Signing Configuration
+- **Test / Sideloading (Default)**: Automatically signed using the debug certificate (`debug.keystore`), allowing immediate installation on any physical Android smartphone (Android 7.0+ / API 24+) or emulator.
+- **Custom Production Signing**: To sign with your private upload key in GitHub Actions, configure the following GitHub Secrets in your repository settings:
+  - `KEYSTORE_BASE64`: Base64-encoded string of your `.jks` or `.keystore` file (`base64 -w 0 my-key.jks`).
+  - `STORE_PASSWORD`: Keystore store password.
+  - `KEY_PASSWORD`: Key alias password.
 
 ---
 
